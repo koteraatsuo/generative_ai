@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, filedialog
 import threading
 import google.generativeai as genai
 import configparser
@@ -10,7 +10,7 @@ import sys
 # --- 設定 ---
 AI_MODEL_NAME = 'gemini-1.5-flash'
 
-# --- プロンプト定義 (前回と同じ) ---
+# --- プロンプト定義 (変更なし) ---
 SYSTEM_PROMPTS = {
     "diagnosis_assist": """
 #役割
@@ -61,8 +61,9 @@ SYSTEM_PROMPTS = {
 """
 }
 
-
+# --- APIキー読み込み関数 (変更なし) ---
 def load_api_key():
+    # ... (変更なし) ...
     try:
         if getattr(sys, 'frozen', False):
             base_path = os.path.dirname(sys.executable)
@@ -81,6 +82,7 @@ def load_api_key():
         print(f"APIキーの読み込み中にエラーが発生しました: {e}")
         return None
 
+
 # --- GUIアプリケーションのクラス ---
 class HanaApp:
     def __init__(self, root):
@@ -93,7 +95,8 @@ class HanaApp:
             "text": "#E0E0E0", "accent": "#5E81AC", "accent_fg": "#FFFFFF",
             "button_normal": "#3B4252", "button_selected": "#5E81AC", "button_hover": "#4C566A",
             "user_fg": "#88C0D0", "hana_fg": "#A3BE8C", "error_fg": "#BF616A",
-            "cursor": "#FFFFFF", "thinking_fg": "#81909e" # 思考中メッセージの色
+            "cursor": "#FFFFFF", "thinking_fg": "#81909e",
+            "clear_button": "#D08770" # クリアボタン用の色を追加
         }
 
         self.root.config(bg=self.colors["bg_main"])
@@ -124,6 +127,16 @@ class HanaApp:
             button.pack(fill=tk.X, pady=2, padx=10)
             self.buttons[mode] = button
 
+        # ★★★ 新機能: 会話クリアボタンを追加 ★★★
+        tk.Frame(self.button_panel, height=2, bg=self.colors["bg_main"]).pack(fill=tk.X, pady=20, padx=10) # セパレーター
+        self.clear_button = tk.Button(self.button_panel, text="会話をクリア", font=("Yu Gothic UI", 12, "bold"),
+                                      command=self.clear_chat,
+                                      bg=self.colors["clear_button"], fg=self.colors["accent_fg"],
+                                      activebackground=self.colors["button_hover"], activeforeground=self.colors["accent_fg"],
+                                      bd=0, relief=tk.FLAT, anchor="center")
+        self.clear_button.pack(fill=tk.X, pady=5, padx=10)
+
+
         self.content_panel = tk.Frame(self.main_frame, bg=self.colors["bg_main"])
         self.content_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
@@ -137,11 +150,8 @@ class HanaApp:
         self.result_text.tag_config("hana", font=("Yu Gothic UI", 11, "bold"), foreground=self.colors["hana_fg"])
         self.result_text.tag_config("error", font=("Yu Gothic UI", 11, "bold"), foreground=self.colors["error_fg"])
         self.result_text.tag_config("info", font=("Yu Gothic UI", 11, "italic"), foreground=self.colors["text"])
-        # ★★★ 変更点: 「思考中」メッセージ用のタグを追加 ★★★
         self.result_text.tag_config("thinking_tag", font=("Yu Gothic UI", 11, "italic"), foreground=self.colors["thinking_fg"])
 
-
-        # ★★★ 変更点: 入力欄の高さを 4 -> 6 に変更 ★★★
         self.input_text = scrolledtext.ScrolledText(self.content_panel, height=10, font=("Yu Gothic UI", 11), wrap=tk.WORD,
                                                    bg=self.colors["bg_entry"], fg=self.colors["text"], insertbackground=self.colors["cursor"],
                                                    bd=0, relief=tk.FLAT, padx=10, pady=10)
@@ -153,15 +163,85 @@ class HanaApp:
                                    command=self.run_ai_thread, bd=0, relief=tk.FLAT)
         self.run_button.pack(fill=tk.X, padx=10, pady=5)
 
+        self.io_button_frame = tk.Frame(self.content_panel, bg=self.colors["bg_main"])
+        self.io_button_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+
+        self.save_button = tk.Button(self.io_button_frame, text="会話を保存", font=("Yu Gothic UI", 11),
+                                     bg=self.colors["button_normal"], fg=self.colors["text"],
+                                     activebackground=self.colors["button_hover"], activeforeground=self.colors["text"],
+                                     command=self.save_chat, bd=0, relief=tk.FLAT)
+        self.save_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+        self.load_button = tk.Button(self.io_button_frame, text="テキスト読込", font=("Yu Gothic UI", 11),
+                                     bg=self.colors["button_normal"], fg=self.colors["text"],
+                                     activebackground=self.colors["button_hover"], activeforeground=self.colors["text"],
+                                     command=self.load_text, bd=0, relief=tk.FLAT)
+        self.load_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
+
         self.status_var = tk.StringVar()
         self.status_bar = tk.Label(root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W,
                                    bg=self.colors["bg_panel"], fg=self.colors["text"], font=("Yu Gothic UI", 9))
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
-        self.set_mode(self.current_mode)
+        self.initialize_chat()
 
-    # (set_modeメソッドは変更なし)
-    def set_mode(self, mode):
+    def initialize_chat(self):
+        """チャット画面を初期状態にする"""
+        self.set_mode(self.current_mode, is_initialization=True)
+
+    # ★★★ 新機能: 会話をクリアするメソッド ★★★
+    def clear_chat(self):
+        """チャット履歴と入力欄をクリアし、セッションをリセットする"""
+        if messagebox.askyesno("確認", "現在の会話履歴をすべてクリアしますか？"):
+            self.input_text.delete("1.0", tk.END)
+            self.chat_session = None
+            self.initialize_chat()
+
+    # (save_chat, load_textメソッドは変更なし)
+    def save_chat(self):
+        # ... (変更なし) ...
+        chat_content = self.result_text.get("1.0", tk.END)
+        if not chat_content.strip():
+            messagebox.showwarning("保存エラー", "保存する内容がありません。")
+            return
+        filepath = filedialog.asksaveasfilename(
+            title="会話履歴を保存",
+            defaultextension=".txt",
+            filetypes=[("テキストファイル", "*.txt"), ("すべてのファイル", "*.*")]
+        )
+        if filepath:
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(chat_content)
+                self.status_var.set(f"ファイルを保存しました: {os.path.basename(filepath)}")
+            except Exception as e:
+                messagebox.showerror("保存エラー", f"ファイルの保存中にエラーが発生しました:\n{e}")
+                self.status_var.set("ファイルの保存に失敗しました")
+                
+    def load_text(self):
+        # ... (変更なし) ...
+        filepath = filedialog.askopenfilename(
+            title="テキストファイルを読み込む",
+            filetypes=[("テキストファイル", "*.txt"), ("すべてのファイル", "*.*")]
+        )
+        if filepath:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                self.input_text.delete("1.0", tk.END)
+                self.input_text.insert("1.0", content)
+                self.status_var.set(f"ファイルを読み込みました: {os.path.basename(filepath)}")
+            except Exception as e:
+                messagebox.showerror("読込エラー", f"ファイルの読み込み中にエラーが発生しました:\n{e}")
+                self.status_var.set("ファイルの読み込みに失敗しました")
+
+
+    # ★★★ 変更点: set_modeメソッドを修正 ★★★
+    def set_mode(self, mode, is_initialization=False):
+        """
+        AIのモードを設定する。
+        is_initializationがTrueの場合のみ、チャット履歴をクリアする。
+        """
         self.current_mode = mode
         self.chat_session = None 
         
@@ -170,35 +250,42 @@ class HanaApp:
         self.buttons[mode].config(bg=self.colors["button_selected"])
         
         mode_text = self.buttons[mode].cget('text')
-        self.status_var.set(f"モード: {mode_text} | 初期化完了")
+        self.status_var.set(f"モード: {mode_text} | 準備完了")
         
         self.result_text.config(state=tk.NORMAL)
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(tk.END, f"華: 『{mode_text}』モードを起動しました。ご用件をどうぞ。\n", ("info",))
+        if is_initialization:
+            # アプリ起動時やクリア時にのみ履歴を消去
+            self.result_text.delete("1.0", tk.END)
+            self.result_text.insert(tk.END, f"華: 『{mode_text}』モードを起動しました。ご用件をどうぞ。\n", ("info",))
+        else:
+            # モード変更時はメッセージを追記
+            self.result_text.insert(tk.END, f"\n--- 『{mode_text}』モードに切り替えました ---\n", ("info",))
+            self.result_text.see(tk.END)
         self.result_text.config(state=tk.DISABLED)
 
     def run_ai_thread(self):
+        # ... (変更なし) ...
         user_input = self.input_text.get("1.0", tk.END).strip()
         if not user_input:
             return
-
         self.result_text.config(state=tk.NORMAL)
         self.result_text.insert(tk.END, f"\nあなた:\n", ("user",))
         self.result_text.insert(tk.END, f"{user_input}\n")
-        # ★★★ 変更点: 「思考中」メッセージをチャット欄に表示 ★★★
         self.result_text.insert(tk.END, "\n「華」が思考中です...\n", ("thinking_tag",))
         self.result_text.see(tk.END) 
         self.result_text.config(state=tk.DISABLED)
         self.input_text.delete("1.0", tk.END)
-
         thread = threading.Thread(target=self.call_hana_ai, args=(self.current_mode, user_input))
         thread.start()
 
     def call_hana_ai(self, mode, user_prompt):
+        # ... (変更なし) ...
         mode_text = self.buttons[mode].cget('text')
         self.run_button.config(state=tk.DISABLED)
+        self.save_button.config(state=tk.DISABLED)
+        self.load_button.config(state=tk.DISABLED)
+        self.clear_button.config(state=tk.DISABLED) # クリアボタンも無効化
         self.status_var.set(f"モード: {mode_text} | HANAが思考中...")
-        
         try:
             if self.chat_session is None:
                 model = genai.GenerativeModel(
@@ -206,37 +293,34 @@ class HanaApp:
                     system_instruction=SYSTEM_PROMPTS[mode]
                 )
                 self.chat_session = model.start_chat(history=[])
-
             response = self.chat_session.send_message(user_prompt)
             result = response.text
         except Exception as e:
             result = f"API呼び出し中にエラーが発生しました:\n{e}"
             self.chat_session = None
-
         self.root.after(0, self.update_chat_display, result)
 
     def update_chat_display(self, result):
+        # ... (変更なし) ...
         self.result_text.config(state=tk.NORMAL)
-        
-        # ★★★ 変更点: 古い「思考中」メッセージをタグで検索して削除 ★★★
         tag_ranges = self.result_text.tag_ranges("thinking_tag")
         if tag_ranges:
             self.result_text.delete(tag_ranges[0], tag_ranges[1])
-        
         if "API呼び出し中にエラーが発生しました" in result:
              self.result_text.insert(tk.END, f"\nシステムエラー:\n", ("error",))
         else:
             self.result_text.insert(tk.END, f"\nHANA:\n", ("hana",))
-
         self.result_text.insert(tk.END, f"{result}\n")
         self.result_text.see(tk.END)
         self.result_text.config(state=tk.DISABLED)
-        
         mode_text = self.buttons[self.current_mode].cget('text')
         self.run_button.config(state=tk.NORMAL)
+        self.save_button.config(state=tk.NORMAL)
+        self.load_button.config(state=tk.NORMAL)
+        self.clear_button.config(state=tk.NORMAL) # クリアボタンも有効化
         self.status_var.set(f"モード: {mode_text} | 入力待機中")
 
-# --- メイン実行部 ---
+# --- メイン実行部 (変更なし) ---
 def main():
     API_KEY = load_api_key()
     
